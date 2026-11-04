@@ -1,2 +1,2 @@
-# Teensy-For-Iridescence
-This is the code of teensy in the portfolio
+# Arduino-For-Iridescence
+This is the code of Arduino in the portfolio project Iridescence
