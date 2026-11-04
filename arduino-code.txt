@@ -1,0 +1,155 @@
+#include <Arduino.h>
+ 
+// Teensy 4.1 -> Serial -> UDP -> Max
+ 
+constexpr uint8_t BUTTON_PINS[4] = {2, 3, 4, 5};
+constexpr uint8_t SWITCH_PIN = 6;
+constexpr uint8_t POT_PIN = A0;
+ 
+constexpr unsigned long DEBOUNCE_MS = 10;
+constexpr unsigned long SNAPSHOT_MS = 100;
+constexpr unsigned long POT_INTERVAL_MS = 20;
+constexpr float POT_CHANGE_THRESHOLD = 0.005f;
+ 
+struct DebouncedInput {
+ uint8_t pin;
+ bool stableRaw;
+ bool lastRaw;
+ unsigned long changedAt;
+};
+ 
+DebouncedInput buttons[4];
+DebouncedInput slideSwitch;
+ 
+float filteredPot = 0.0f;
+float lastSentPot = -1.0f;
+ 
+unsigned long lastSnapshotAt = 0;
+unsigned long lastPotAt = 0;
+ 
+void beginInput(DebouncedInput &input, uint8_t pin) {
+ input.pin = pin;
+ pinMode(pin, INPUT_PULLUP);
+ input.stableRaw = digitalRead(pin);
+ input.lastRaw = input.stableRaw;
+ input.changedAt = millis();
+}
+ 
+bool updateInput(DebouncedInput &input) {
+ bool raw = digitalRead(input.pin);
+ unsigned long now = millis();
+ 
+ if (raw != input.lastRaw) {
+   input.lastRaw = raw;
+   input.changedAt = now;
+ }
+ 
+ if (raw != input.stableRaw &&
+     now - input.changedAt >= DEBOUNCE_MS) {
+   input.stableRaw = raw;
+   return true;
+ }
+ 
+ return false;
+}
+ 
+int pressedValue(const DebouncedInput &input) {
+ return input.stableRaw == LOW ? 1 : 0;
+}
+ 
+void sendButton(uint8_t index) {
+ Serial.print("/button/");
+ Serial.print(index + 1);
+ Serial.print(' ');
+ Serial.println(pressedValue(buttons[index]));
+}
+ 
+void sendSwitch() {
+ Serial.print("/switch ");
+ Serial.println(slideSwitch.stableRaw == LOW ? 1 : 0);
+}
+ 
+void sendPot(float value) {
+ Serial.print("/pot ");
+ Serial.println(value, 4);
+ lastSentPot = value;
+}
+ 
+void sendSnapshot(float potValue) {
+ for (uint8_t i = 0; i < 4; i++) {
+   sendButton(i);
+ }
+ 
+ sendSwitch();
+ sendPot(potValue);
+}
+ 
+void setup() {
+ Serial.begin(115200);
+ 
+ for (uint8_t i = 0; i < 4; i++) {
+   beginInput(buttons[i], BUTTON_PINS[i]);
+ }
+ 
+ beginInput(slideSwitch, SWITCH_PIN);
+ 
+ analogReadResolution(10);
+ analogReadAveraging(8);
+ 
+ filteredPot = analogRead(POT_PIN);
+ 
+ delay(30);
+ 
+ float potValue =
+     constrain(filteredPot / 1023.0f, 0.0f, 1.0f);
+ 
+ sendSnapshot(potValue);
+ 
+ lastSnapshotAt = millis();
+ lastPotAt = millis();
+}
+ 
+void loop() {
+ unsigned long now = millis();
+ 
+ // 按钮：状态变化后立即发送
+ for (uint8_t i = 0; i < 4; i++) {
+   if (updateInput(buttons[i])) {
+     sendButton(i);
+   }
+ }
+ 
+ // 拨动开关
+ if (updateInput(slideSwitch)) {
+   sendSwitch();
+ }
+ 
+ // 电位器：每 20ms 读取一次
+ if (now - lastPotAt >= POT_INTERVAL_MS) {
+   lastPotAt = now;
+ 
+   int rawPot = analogRead(POT_PIN);
+ 
+   filteredPot +=
+       0.25f * (rawPot - filteredPot);
+ 
+   float potValue =
+       constrain(filteredPot / 1023.0f, 0.0f, 1.0f);
+ 
+   if (fabsf(potValue - lastSentPot) >=
+       POT_CHANGE_THRESHOLD) {
+     sendPot(potValue);
+   }
+ }
+ 
+ // 每 100ms 同步所有状态
+ if (now - lastSnapshotAt >= SNAPSHOT_MS) {
+   float potValue =
+       constrain(filteredPot / 1023.0f, 0.0f, 1.0f);
+ 
+   sendSnapshot(potValue);
+   lastSnapshotAt = now;
+ }
+ 
+ delay(1);
+}
